@@ -1,0 +1,80 @@
+# GPU Utilization Manager Configuration
+# For B200 GPU - maintains 70%+ utilization
+
+gpu_id: 0
+poll_interval_sec: 2.0
+target_util_pct: 70.0
+
+thresholds:
+  low_boost_pct: 65.0
+  target_floor_pct: 70.0
+  healthy_high_pct: 88.0
+  reduce_pct: 92.0
+  emergency_reduce_pct: 95.0
+  critical_pause_pct: 98.0
+
+hysteresis:
+  consecutive_polls: 2
+  min_dwell_sec: 8.0
+
+filler:
+  levels:
+    0: # PAUSED
+      workers: 0
+      batch_size: 0
+      streams: 0
+      sleep_ms: 100
+    1: # LOW
+      workers: 1
+      batch_size: 32
+      streams: 1
+      sleep_ms: 20
+    2: # MEDIUM
+      workers: 1
+      batch_size: 64
+      streams: 2
+      sleep_ms: 10
+    3: # HIGH
+      workers: 2
+      batch_size: 96
+      streams: 2
+      sleep_ms: 5
+    4: # MAX
+      workers: 2
+      batch_size: 128
+      streams: 4
+      sleep_ms: 0
+    5:
+      workers: 3
+      batch_size: 160
+      streams: 4
+      sleep_ms: 0
+    6:
+      workers: 3
+      batch_size: 192
+      streams: 5
+      sleep_ms: 0
+    7:
+      workers: 4
+      batch_size: 224
+      streams: 6
+      sleep_ms: 0
+    8:
+      workers: 4
+      batch_size: 256
+      streams: 8
+      sleep_ms: 0
+
+  mps_caps_no_experiment: [0, 40, 60, 80, 90, 92, 94, 96, 98]
+  mps_caps_experiment_active: [0, 5, 10, 20, 30, 35, 40, 45, 50]
+
+shm_name: "/gpu_manager_shm"
+socket_path: "/tmp/gpu_manager.sock"
+
+mps_pipe_dir: "/tmp/nvidia-mps"
+mps_log_dir: "/tmp/nvidia-mps-log"
+
+experiment_heartbeat_timeout_sec: 30.0
+enable_process_detection: true
+
+max_filler_memory_gb: 20.0

@@ -1,0 +1,24 @@
+[Unit]
+Description=GPU Utilization Manager
+After=network.target nvidia-persistenced.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/gpu_manager
+Environment=PYTHONPATH=/opt/gpu_manager
+Environment=CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps
+Environment=CUDA_MPS_LOG_DIRECTORY=/tmp/nvidia-mps-log
+
+ExecStartPre=-/usr/bin/nvidia-smi -i 0 -c EXCLUSIVE_PROCESS
+ExecStartPre=-/bin/mkdir -p /tmp/nvidia-mps /tmp/nvidia-mps-log
+
+ExecStart=/usr/bin/python3 /opt/gpu_manager/src/daemon.py /opt/gpu_manager/config.yaml
+
+ExecStopPost=-/usr/bin/pkill -f "filler_worker.py"
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
