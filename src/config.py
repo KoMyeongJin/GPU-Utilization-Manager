@@ -36,6 +36,7 @@ class FillerLevel:
 @dataclass
 class FillerConfig:
     """Filler workload configuration."""
+    sublevels_per_major: int = 1
     levels: Dict[int, FillerLevel] = field(default_factory=lambda: {
         0: FillerLevel(workers=0, batch_size=0, streams=0, sleep_ms=100),
         1: FillerLevel(workers=1, batch_size=32, streams=1, sleep_ms=20),
@@ -50,6 +51,58 @@ class FillerConfig:
     mps_caps_no_experiment: List[int] = field(default_factory=lambda: [0, 40, 60, 80, 90, 92, 94, 96, 98])
     mps_caps_experiment_active: List[int] = field(default_factory=lambda: [0, 5, 10, 20, 30, 35, 40, 45, 50])
 
+    @property
+    def max_major_level(self) -> int:
+        return max(self.levels)
+
+    @property
+    def max_step(self) -> int:
+        return self.max_major_level * self.sublevels_per_major
+
+    def split_step(self, step: int) -> tuple[int, int]:
+        clamped_step = max(0, min(step, self.max_step))
+        return divmod(clamped_step, self.sublevels_per_major)
+
+    def interpolate_mps_cap(self, step: int, experiment_active: bool) -> int:
+        caps = self.mps_caps_experiment_active if experiment_active else self.mps_caps_no_experiment
+        major_level, sublevel = self.split_step(step)
+        if self.sublevels_per_major == 1 or major_level >= self.max_major_level:
+            return caps[major_level]
+        next_level = min(major_level + 1, self.max_major_level)
+        ratio = sublevel / self.sublevels_per_major
+        interpolated = caps[major_level] + ratio * (caps[next_level] - caps[major_level])
+        return int(round(interpolated))
+
+    def interpolate_level_config(self, step: int) -> FillerLevel:
+        major_level, sublevel = self.split_step(step)
+        base = self.levels[major_level]
+        if self.sublevels_per_major == 1 or major_level >= self.max_major_level:
+            return FillerLevel(
+                workers=base.workers,
+                batch_size=base.batch_size,
+                streams=base.streams,
+                sleep_ms=base.sleep_ms,
+            )
+
+        next_level = min(major_level + 1, self.max_major_level)
+        nxt = self.levels[next_level]
+        ratio = sublevel / self.sublevels_per_major
+        return self._blend_level_configs(base, nxt, ratio)
+
+    def _blend_level_configs(self, start: FillerLevel, end: FillerLevel, ratio: float) -> FillerLevel:
+        workers = int(round(start.workers + ratio * (end.workers - start.workers)))
+        batch_size = int(round(start.batch_size + ratio * (end.batch_size - start.batch_size)))
+        streams = int(round(start.streams + ratio * (end.streams - start.streams)))
+        sleep_ms = start.sleep_ms + ratio * (end.sleep_ms - start.sleep_ms)
+
+        return FillerLevel(
+            workers=workers,
+            batch_size=batch_size,
+            streams=streams,
+            sleep_ms=sleep_ms,
+        )
+
+
 
 @dataclass
 class ManagerConfig:
@@ -58,6 +111,7 @@ class ManagerConfig:
     gpu_id: int = 0
     poll_interval_sec: float = 2.0
     target_util_pct: float = 70.0
+    enable_mps: bool = True
 
     # Thresholds
     thresholds: Thresholds = field(default_factory=Thresholds)
@@ -103,6 +157,8 @@ class ManagerConfig:
             config.poll_interval_sec = data['poll_interval_sec']
         if 'target_util_pct' in data:
             config.target_util_pct = data['target_util_pct']
+        if 'enable_mps' in data:
+            config.enable_mps = bool(data['enable_mps'])
 
         if 'thresholds' in data:
             config.thresholds = Thresholds(**data['thresholds'])
@@ -112,6 +168,8 @@ class ManagerConfig:
 
         if 'filler' in data:
             filler_data = data['filler']
+            if 'sublevels_per_major' in filler_data:
+                config.filler.sublevels_per_major = int(filler_data['sublevels_per_major'])
             if 'levels' in filler_data:
                 levels = {}
                 for level_id, level_data in filler_data['levels'].items():
@@ -130,6 +188,7 @@ class ManagerConfig:
             'gpu_id': self.gpu_id,
             'poll_interval_sec': self.poll_interval_sec,
             'target_util_pct': self.target_util_pct,
+            'enable_mps': self.enable_mps,
             'thresholds': {
                 'low_boost_pct': self.thresholds.low_boost_pct,
                 'target_floor_pct': self.thresholds.target_floor_pct,
@@ -143,6 +202,7 @@ class ManagerConfig:
                 'min_dwell_sec': self.hysteresis.min_dwell_sec,
             },
             'filler': {
+                'sublevels_per_major': self.filler.sublevels_per_major,
                 'levels': {
                     k: {
                         'workers': v.workers,

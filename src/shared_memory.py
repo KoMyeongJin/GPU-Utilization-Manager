@@ -104,8 +104,14 @@ class SharedMemoryManager:
         state.timestamp = time.time()
         self._write_state(state)
 
+    def set_step(self, step: int) -> None:
+        self.set_level(step)
+
     def get_level(self) -> int:
         return self._read_state().target_level
+
+    def get_target_step(self) -> int:
+        return self.get_level()
 
     def send_command(self, command: ShmCommands, param: int = 0) -> None:
         state = self._read_state()
@@ -166,12 +172,18 @@ class SharedMemoryClient:
         mm.write(state.pack())
         mm.flush()
 
+    def update_current_step(self, step: int) -> None:
+        self.update_current_level(step)
+
     def get_command(self) -> Tuple[ShmCommands, int]:
         state = self._read_state()
         return ShmCommands(state.command), state.command_param
 
     def get_target_level(self) -> int:
         return self._read_state().target_level
+
+    def get_target_step(self) -> int:
+        return self.get_target_level()
 
     def clear_command(self) -> None:
         mm = self.mm

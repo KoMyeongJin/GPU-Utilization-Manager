@@ -1,10 +1,9 @@
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import pytest
-import time
-from state_machine import FillerStateMachine, FillerState, StateMachineConfig, ScalingDecision
+from src.state_machine import FillerStateMachine, FillerState, StateMachineConfig, ScalingDecision
 
 
 class TestFillerStateMachine:
@@ -12,6 +11,7 @@ class TestFillerStateMachine:
         sm = FillerStateMachine()
         assert sm.current_state == FillerState.PAUSED
         assert sm.current_level == 0
+        assert sm.current_step == 0
 
     def test_transition_to_valid(self):
         sm = FillerStateMachine(StateMachineConfig(min_dwell_sec=0))
@@ -46,22 +46,32 @@ class TestFillerStateMachine:
     def test_process_decision_no_change(self):
         sm = FillerStateMachine(StateMachineConfig(min_dwell_sec=0))
         sm.transition_to(FillerState.MEDIUM)
-        decision = ScalingDecision(filler_level=2, filler_mps_cap_pct=60, reason="test")
+        decision = ScalingDecision(target_step=2, filler_mps_cap_pct=60, reason="test")
         result = sm.process_decision(decision, hysteresis_met=True)
-        assert result == FillerState.MEDIUM
+        assert result == 2
 
     def test_process_decision_with_change(self):
         sm = FillerStateMachine(StateMachineConfig(min_dwell_sec=0))
         sm.transition_to(FillerState.LOW)
-        decision = ScalingDecision(filler_level=3, filler_mps_cap_pct=80, reason="test")
+        decision = ScalingDecision(target_step=3, filler_mps_cap_pct=80, reason="test")
         result = sm.process_decision(decision, hysteresis_met=True)
-        assert result == FillerState.HIGH
+        assert result == 3
+        assert sm.current_state == FillerState.HIGH
 
     def test_upshift_clamp_to_max(self):
         sm = FillerStateMachine(StateMachineConfig(min_dwell_sec=0))
         sm.transition_to(FillerState.HIGH)
         sm.upshift(10)
         assert sm.current_level == 8
+
+    def test_sublevels_track_major_and_minor(self):
+        sm = FillerStateMachine(StateMachineConfig(min_dwell_sec=0, sublevels_per_major=4))
+        decision = ScalingDecision(target_step=6, filler_mps_cap_pct=50, reason="test")
+        result = sm.process_decision(decision, hysteresis_met=True)
+        assert result == 6
+        assert sm.current_level == 1
+        assert sm.current_sublevel == 2
+        assert sm.current_state == FillerState.LOW
 
 
 if __name__ == "__main__":

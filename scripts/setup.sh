@@ -116,7 +116,8 @@ pip install torch --index-url "$TORCH_INDEX"
 
 echo ""
 echo "Step 5: Installing other dependencies..."
-pip install pyyaml pynvml
+pip uninstall -y pynvml >/dev/null 2>&1 || true
+pip install pyyaml nvidia-ml-py
 
 echo ""
 echo "Step 6: Installing system dependencies..."

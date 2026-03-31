@@ -6,18 +6,44 @@ import json
 import socket
 from typing import Optional
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from config import load_config
-from dcgm_monitor import DCGMMonitor, MetricsAggregator
-from experiment_registry import ExperimentRegistry
-from mps_adapter import MPSAdapter
-from filler_controller import FillerController
-from scaling_engine import ScalingEngine, ScalingConfig
-from state_machine import FillerStateMachine, StateMachineConfig
+try:
+    from .config import load_config
+    from .dcgm_monitor import DCGMMonitor, MetricsAggregator
+    from .experiment_registry import ExperimentRegistry, ExperimentStatus
+    from .mps_adapter import MPSAdapter
+    from .filler_controller import FillerController
+    from .scaling_engine import ScalingEngine, ScalingConfig
+    from .state_machine import FillerStateMachine, StateMachineConfig
+except ImportError:
+    from src.config import load_config
+    from src.dcgm_monitor import DCGMMonitor, MetricsAggregator
+    from src.experiment_registry import ExperimentRegistry, ExperimentStatus
+    from src.mps_adapter import MPSAdapter
+    from src.filler_controller import FillerController
+    from src.scaling_engine import ScalingEngine, ScalingConfig
+    from src.state_machine import FillerStateMachine, StateMachineConfig
 
 
 class GPUtilizationManager:
+
+    def _inactive_experiment_status(self) -> ExperimentStatus:
+        return ExperimentStatus(
+            active=False,
+            active_pids=[],
+            estimated_load_pct=0.0,
+            experiments=[],
+        )
+
+    def _get_effective_experiment_status(self, current_gpu_util_pct: Optional[float] = None) -> ExperimentStatus:
+        if not self.config.enable_mps:
+            return self._inactive_experiment_status()
+
+        return self.registry.get_status(
+            current_gpu_util_pct=current_gpu_util_pct,
+            filler_pids=set(self.filler.get_active_pids()),
+        )
 
     def __init__(self, config_path: Optional[str] = None):
         self.config = load_config(config_path)
@@ -47,12 +73,17 @@ class GPUtilizationManager:
             reduce_pct=self.config.thresholds.reduce_pct,
             emergency_reduce_pct=self.config.thresholds.emergency_reduce_pct,
             critical_pause_pct=self.config.thresholds.critical_pause_pct,
+            sublevels_per_major=self.config.filler.sublevels_per_major,
+            max_major_level=self.config.filler.max_major_level,
+            mps_caps_no_experiment=self.config.filler.mps_caps_no_experiment,
+            mps_caps_experiment_active=self.config.filler.mps_caps_experiment_active,
         )
         self.scaling = ScalingEngine(scaling_config)
 
         state_config = StateMachineConfig(
             hysteresis_polls=self.config.hysteresis.consecutive_polls,
-            min_dwell_sec=self.config.hysteresis.min_dwell_sec
+            min_dwell_sec=self.config.hysteresis.min_dwell_sec,
+            sublevels_per_major=self.config.filler.sublevels_per_major,
         )
         self.state_machine = FillerStateMachine(state_config)
 
@@ -111,24 +142,23 @@ class GPUtilizationManager:
             pass
 
     def _on_experiment_start(self):
-        status = self.registry.get_status()
+        status = self._get_effective_experiment_status()
         if status.active:
             self.state_machine.downshift(2, "experiment started")
-            mps_cap = self.config.filler.mps_caps_experiment_active[
-                min(self.state_machine.current_level, 4)
-            ]
-            self.mps.set_active_thread_percentage(mps_cap)
-            self.filler.apply_level(self.state_machine.current_level)
+            mps_cap = self.config.filler.interpolate_mps_cap(self.state_machine.current_step, True)
+            if self.config.enable_mps:
+                self.mps.set_active_thread_percentage(mps_cap)
+            self.filler.apply_step(self.state_machine.current_step)
 
     def _on_experiment_stop(self):
-        status = self.registry.get_status()
+        status = self._get_effective_experiment_status()
         if not status.active:
             pass
 
     def initialize(self) -> bool:
         print("Initializing GPU Utilization Manager...")
 
-        if not self.mps.start():
+        if self.config.enable_mps and not self.mps.start():
             print("Warning: MPS not started, continuing anyway")
 
         if not self.filler.initialize():
@@ -147,19 +177,18 @@ class GPUtilizationManager:
         sample = self.monitor.read_sample()
         self.aggregator.add(sample)
 
-        exp_status = self.registry.get_status()
-
         util = self.aggregator.ema_util()
         trend = self.aggregator.trend()
+        exp_status = self._get_effective_experiment_status(current_gpu_util_pct=util)
 
         decision = self.scaling.decide(
             self.aggregator.samples,
             exp_status,
-            self.state_machine.current_level,
+            self.state_machine.current_step,
             trend
         )
 
-        if decision.filler_level == self.state_machine.current_level:
+        if decision.target_step == self.state_machine.current_step:
             self._consecutive_matches = 0
         else:
             self._consecutive_matches += 1
@@ -167,23 +196,16 @@ class GPUtilizationManager:
         hysteresis_met = self._consecutive_matches >= self.config.hysteresis.consecutive_polls
 
         if hysteresis_met:
-            previous_state = self.state_machine.current_state
-            new_state = self.state_machine.process_decision(decision, hysteresis_met)
+            previous_step = self.state_machine.current_step
+            new_step = self.state_machine.process_decision(decision, hysteresis_met)
 
-            if new_state != previous_state:
-                if exp_status.active:
-                    mps_cap = self.config.filler.mps_caps_experiment_active[
-                        min(int(new_state), 4)
-                    ]
-                else:
-                    mps_cap = self.config.filler.mps_caps_no_experiment[
-                        min(int(new_state), 4)
-                    ]
+            if new_step != previous_step:
+                mps_cap = self.config.filler.interpolate_mps_cap(new_step, exp_status.active)
+                if self.config.enable_mps:
+                    self.mps.set_active_thread_percentage(mps_cap)
+                self.filler.apply_step(new_step)
 
-                self.mps.set_active_thread_percentage(mps_cap)
-                self.filler.apply_level(int(new_state))
-
-                print(f"Transitioned to level {int(new_state)}: {decision.reason} "
+                print(f"Transitioned to step {new_step} (level {self.state_machine.current_level}+{self.state_machine.current_sublevel}/{self.config.filler.sublevels_per_major}): {decision.reason} "
                       f"(util={util:.1f}%, exp_active={exp_status.active})")
 
         self._last_decision = decision
@@ -218,7 +240,8 @@ class GPUtilizationManager:
             if os.path.exists(self.config.socket_path):
                 os.remove(self.config.socket_path)
 
-        self.mps.stop()
+        if self.config.enable_mps:
+            self.mps.stop()
 
         print("Shutdown complete")
 

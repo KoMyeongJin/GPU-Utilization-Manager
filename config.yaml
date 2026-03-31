@@ -4,6 +4,7 @@
 gpu_id: 0
 poll_interval_sec: 2.0
 target_util_pct: 70.0
+enable_mps: false
 
 thresholds:
   low_boost_pct: 65.0
@@ -18,6 +19,7 @@ hysteresis:
   min_dwell_sec: 8.0
 
 filler:
+  sublevels_per_major: 4
   levels:
     0: # PAUSED
       workers: 0

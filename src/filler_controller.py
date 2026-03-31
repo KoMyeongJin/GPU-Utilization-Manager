@@ -2,8 +2,12 @@ import subprocess
 import os
 import signal
 from typing import List, Dict, Optional
-from config import ManagerConfig, FillerLevel
-from shared_memory import SharedMemoryManager
+try:
+    from .config import ManagerConfig, FillerLevel
+    from .shared_memory import SharedMemoryManager
+except ImportError:
+    from src.config import ManagerConfig, FillerLevel
+    from src.shared_memory import SharedMemoryManager
 
 
 class FillerController:
@@ -11,7 +15,8 @@ class FillerController:
         self.config = config
         self.shm = SharedMemoryManager(config.shm_name)
         self._workers: Dict[int, subprocess.Popen[bytes]] = {}
-        self._current_level = 0
+        self._current_step = 0
+        self._current_major_level = 0
 
     def initialize(self) -> bool:
         try:
@@ -45,6 +50,7 @@ class FillerController:
             "FILLER_BATCH_SIZE": str(level_config.batch_size),
             "FILLER_STREAMS": str(level_config.streams),
             "FILLER_SLEEP_MS": str(level_config.sleep_ms),
+            "FILLER_SUBLEVELS_PER_MAJOR": str(self.config.filler.sublevels_per_major),
             "CUDA_VISIBLE_DEVICES": str(self.config.gpu_id),
         })
 
@@ -83,17 +89,24 @@ class FillerController:
             self._stop_worker(pid)
 
     def apply_level(self, level: int) -> bool:
-        if level not in self.config.filler.levels:
+        return self.apply_step(level * self.config.filler.sublevels_per_major)
+
+    def apply_step(self, step: int) -> bool:
+        clamped_step = max(0, min(step, self.config.filler.max_step))
+        major_level, _ = self.config.filler.split_step(clamped_step)
+        if major_level not in self.config.filler.levels:
             return False
 
-        level_config = self.config.filler.levels[level]
-        self.shm.set_level(level)
+        level_config = self.config.filler.interpolate_level_config(clamped_step)
+        self.shm.set_step(clamped_step)
+
         self.ensure_workers(level_config.workers, level_config)
-        if level == 0:
+        if clamped_step == 0:
             self.shm.pause()
         else:
             self.shm.resume()
-        self._current_level = level
+        self._current_step = clamped_step
+        self._current_major_level = major_level
 
         return True
 

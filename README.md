@@ -46,7 +46,7 @@ What setup does now:
 - creates `venv/`
 - installs PyTorch inside the virtualenv
 - chooses the PyTorch wheel index from the detected CUDA version
-- installs `pyyaml` and `pynvml`
+- installs `pyyaml` and `nvidia-ml-py`
 - tries to install DCGM packages
 - prepares MPS directories
 
@@ -96,6 +96,7 @@ Main settings live in `config.yaml`.
 gpu_id: 0
 poll_interval_sec: 2.0
 target_util_pct: 70.0
+enable_mps: true
 
 thresholds:
   low_boost_pct: 65.0
@@ -139,6 +140,16 @@ mps_caps_experiment_active:  [0, 5, 10, 20, 30, 35, 40, 45, 50]
 ./scripts/run.sh status
 watch -n 1 nvidia-smi
 dcgmi dmon -e 1001,1002,1003
+```
+
+## MPS
+
+If your environment uses `EXCLUSIVE_PROCESS`, keep `enable_mps: true`.
+
+If your environment keeps GPU compute mode as `Default`, set:
+
+```yaml
+enable_mps: false
 ```
 
 ## Current Limitations
