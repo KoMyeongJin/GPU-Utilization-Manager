@@ -91,6 +91,11 @@ class GPUtilizationManager:
         self._poll_count = 0
         self._consecutive_matches = 0
         self._last_decision = None
+        
+        # NEW: Diagnostic fields
+        self._diagnostic_interval = getattr(self.config, 'diagnostic_interval_polls', 30)
+        self._diagnostic_counter = 0
+        self._decision_timestamps = []
 
     def _setup_signal_handlers(self):
         def handle_signal(signum, frame):
@@ -155,6 +160,57 @@ class GPUtilizationManager:
         if not status.active:
             pass
 
+    def _log_diagnostics(self, metrics, decision):
+        """Log diagnostic information for failure mode investigation."""
+        try:
+            kv_pressure = self.aggregator.get_kv_cache_pressure_estimate(metrics.memory_util)
+            measurement_noise = self.aggregator.detect_measurement_noise()
+            
+            worker_count = len(self.filler.get_active_pids())
+            target_major_level = decision.target_step // self.config.filler.sublevels_per_major + 1
+            parallelism_ratio = worker_count / max(target_major_level, 1)
+            
+            diagnostic_msg = (
+                f"[DIAG] GPU%={metrics.gpu_util:.1f} "
+                f"Mem%={metrics.memory_util:.1f} ({kv_pressure}) "
+                f"Temp={metrics.temperature:.0f}C "
+                f"Power={metrics.power_draw:.1f}W | "
+                f"Workers={worker_count}/{target_major_level} (ratio={parallelism_ratio:.2f}) | "
+                f"Decision={decision.reason} "
+                f"MeasurementNoise={measurement_noise}"
+            )
+            print(diagnostic_msg)
+            
+            # Log to file for analysis
+            try:
+                with open(f"/tmp/gpu_diag_{self.config.gpu_id}.log", "a") as f:
+                    f.write(f"{time.time():.3f} {diagnostic_msg}\n")
+            except Exception:
+                pass
+        except Exception:
+            # Silently fail; diagnostics should not break main loop
+            pass
+
+    def _measure_scheduler_latency(self) -> float:
+        """Measure time between consecutive scaling decisions."""
+        now = time.time()
+        self._decision_timestamps.append(now)
+        
+        # Keep last 100 decisions
+        if len(self._decision_timestamps) > 100:
+            self._decision_timestamps.pop(0)
+        
+        if len(self._decision_timestamps) < 2:
+            return 0.0
+        
+        # Average time between decisions
+        deltas = [
+            self._decision_timestamps[i+1] - self._decision_timestamps[i]
+            for i in range(len(self._decision_timestamps) - 1)
+        ]
+        
+        return sum(deltas) / len(deltas) if deltas else 0.0
+
     def initialize(self) -> bool:
         print("Initializing GPU Utilization Manager...")
 
@@ -209,6 +265,15 @@ class GPUtilizationManager:
                       f"(util={util:.1f}%, exp_active={exp_status.active})")
 
         self._last_decision = decision
+        
+        # NEW: Diagnostic logging
+        self._diagnostic_counter += 1
+        if self._diagnostic_counter >= self._diagnostic_interval:
+            self._log_diagnostics(sample, decision)
+            scheduler_latency = self._measure_scheduler_latency()
+            if scheduler_latency > self.config.poll_interval_sec * 2:
+                print(f"[WARN] Scheduler latency high: {scheduler_latency:.3f}s (potential queue starvation)")
+            self._diagnostic_counter = 0
 
     def run(self):
         self.running = True
