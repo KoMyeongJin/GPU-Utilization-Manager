@@ -10,7 +10,15 @@ echo "=========================================="
 echo "GPU Utilization Manager Setup"
 echo "=========================================="
 
-GPU_ID=${1:-0}
+MODE="setup"
+GPU_ID=0
+
+if [ "$1" = "mps" ]; then
+  MODE="mps"
+  GPU_ID=${2:-0}
+else
+  GPU_ID=${1:-0}
+fi
 
 get_cuda_version() {
   local cuda_version=""
@@ -128,25 +136,36 @@ fi
 
 echo ""
 echo "Step 7: Creating directories..."
-mkdir -p /tmp/nvidia-mps
-mkdir -p /tmp/nvidia-mps-log
 mkdir -p /var/log/gpu_manager
 mkdir -p "$PROJECT_DIR/logs"
 
+if [ "$MODE" = "mps" ]; then
+  mkdir -p /tmp/nvidia-mps
+  mkdir -p /tmp/nvidia-mps-log
+fi
+
 echo ""
 echo "Step 8: Configuring GPU..."
-if command -v nvidia-smi &>/dev/null; then
-  nvidia-smi -i $GPU_ID -c EXCLUSIVE_PROCESS || echo "Warning: Could not set exclusive mode"
+if [ "$MODE" = "mps" ]; then
+  if command -v nvidia-smi &>/dev/null; then
+    nvidia-smi -i $GPU_ID -c EXCLUSIVE_PROCESS || echo "Warning: Could not set exclusive mode"
+  else
+    echo "Warning: nvidia-smi not found"
+  fi
 else
-  echo "Warning: nvidia-smi not found"
+  echo "Skipping MPS GPU configuration (run './scripts/setup.sh mps $GPU_ID' to enable it)"
 fi
 
 echo ""
 echo "Step 9: Testing MPS availability..."
-if command -v nvidia-cuda-mps-control &>/dev/null; then
-  echo "✓ MPS control available"
+if [ "$MODE" = "mps" ]; then
+  if command -v nvidia-cuda-mps-control &>/dev/null; then
+    echo "✓ MPS control available"
+  else
+    echo "⚠ Warning: nvidia-cuda-mps-control not found"
+  fi
 else
-  echo "⚠ Warning: nvidia-cuda-mps-control not found"
+  echo "Skipping MPS availability check (run './scripts/setup.sh mps $GPU_ID' to enable it)"
 fi
 
 echo ""
@@ -168,6 +187,9 @@ echo ""
 echo "To start the manager:"
 echo "  source $VENV_DIR/bin/activate"
 echo "  python $PROJECT_DIR/src/daemon.py"
+echo ""
+echo "To configure MPS explicitly:"
+echo "  ./scripts/setup.sh mps $GPU_ID"
 echo ""
 echo "Or use the run script:"
 echo "  ./scripts/run.sh"
