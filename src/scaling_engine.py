@@ -1,5 +1,6 @@
 from typing import List
 from dataclasses import dataclass
+
 try:
     from .dcgm_monitor import GpuMetrics
     from .experiment_registry import ExperimentStatus
@@ -26,7 +27,6 @@ class ScalingConfig:
 
 
 class ScalingEngine:
-
     def __init__(self, config: ScalingConfig):
         self.config = config
         self._last_decision_time = 0.0
@@ -40,13 +40,11 @@ class ScalingEngine:
         samples: List[GpuMetrics],
         experiment: ExperimentStatus,
         current_step: int,
-        trend: float = 0.0
+        trend: float = 0.0,
     ) -> ScalingDecision:
         if not samples:
             return ScalingDecision(
-                target_step=0,
-                filler_mps_cap_pct=0,
-                reason="no samples"
+                target_step=0, filler_mps_cap_pct=0, reason="no samples"
             )
 
         util = self._smoothed_util(samples)
@@ -56,16 +54,25 @@ class ScalingEngine:
         return self._decide_no_experiment(util, trend, current_step)
 
     def _interpolate_mps_cap(self, step: int, experiment_active: bool) -> int:
-        caps = self.config.mps_caps_experiment_active if experiment_active else self.config.mps_caps_no_experiment
+        caps = (
+            self.config.mps_caps_experiment_active
+            if experiment_active
+            else self.config.mps_caps_no_experiment
+        )
         if caps is None:
             return 0
         clamped_step = max(0, min(step, self.max_step))
         major_level, sublevel = divmod(clamped_step, self.config.sublevels_per_major)
-        if self.config.sublevels_per_major == 1 or major_level >= self.config.max_major_level:
+        if (
+            self.config.sublevels_per_major == 1
+            or major_level >= self.config.max_major_level
+        ):
             return caps[major_level]
         next_level = min(major_level + 1, self.config.max_major_level)
         ratio = sublevel / self.config.sublevels_per_major
-        interpolated = caps[major_level] + ratio * (caps[next_level] - caps[major_level])
+        interpolated = caps[major_level] + ratio * (
+            caps[next_level] - caps[major_level]
+        )
         return int(round(interpolated))
 
     def _smoothed_util(self, samples: List[GpuMetrics]) -> float:
@@ -75,17 +82,14 @@ class ScalingEngine:
         return (avg_util * 0.7) + (latest_util * 0.3)
 
     def _decide_no_experiment(
-        self,
-        util: float,
-        trend: float,
-        current_step: int
+        self, util: float, trend: float, current_step: int
     ) -> ScalingDecision:
         if util < self.config.low_boost_pct:
             new_step = min(current_step + 1, self.max_step)
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, False),
-                reason=f"util {util:.1f}% < {self.config.low_boost_pct}% (no exp)"
+                reason=f"util {util:.1f}% < {self.config.low_boost_pct}% (no exp)",
             )
 
         if util < self.config.target_floor_pct:
@@ -93,22 +97,22 @@ class ScalingEngine:
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, False),
-                reason=f"util {util:.1f}% < {self.config.target_floor_pct}% (no exp)"
+                reason=f"util {util:.1f}% < {self.config.target_floor_pct}% (no exp)",
             )
 
         if self.config.target_floor_pct <= util <= self.config.healthy_high_pct:
             return ScalingDecision(
                 target_step=current_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(current_step, False),
-                reason=f"util {util:.1f}% in healthy range"
+                reason=f"util {util:.1f}% in healthy range",
             )
 
         if util > self.config.critical_pause_pct:
-            new_step = max(current_step - 1, 0)
+            new_step = 0
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, False),
-                reason=f"util {util:.1f}% > {self.config.critical_pause_pct}% CRITICAL"
+                reason=f"util {util:.1f}% > {self.config.critical_pause_pct}% CRITICAL",
             )
 
         if util > self.config.emergency_reduce_pct:
@@ -116,7 +120,7 @@ class ScalingEngine:
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, False),
-                reason=f"util {util:.1f}% > {self.config.emergency_reduce_pct}%"
+                reason=f"util {util:.1f}% > {self.config.emergency_reduce_pct}%",
             )
 
         if util > self.config.reduce_pct:
@@ -124,36 +128,32 @@ class ScalingEngine:
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, False),
-                reason=f"util {util:.1f}% > {self.config.reduce_pct}%"
+                reason=f"util {util:.1f}% > {self.config.reduce_pct}%",
             )
 
         return ScalingDecision(
             target_step=current_step,
             filler_mps_cap_pct=self._interpolate_mps_cap(current_step, False),
-            reason=f"util {util:.1f}% - holding"
+            reason=f"util {util:.1f}% - holding",
         )
 
     def _decide_with_experiment(
-        self,
-        util: float,
-        trend: float,
-        current_step: int,
-        experiment: ExperimentStatus
+        self, util: float, trend: float, current_step: int, experiment: ExperimentStatus
     ) -> ScalingDecision:
         if trend > 10:
             new_step = max(current_step - 1, 0)
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, True),
-                reason=f"experiment surge detected (trend +{trend:.1f}%)"
+                reason=f"experiment surge detected (trend +{trend:.1f}%)",
             )
 
         if util > self.config.emergency_reduce_pct:
-            new_step = max(current_step - 1, 0)
+            new_step = 0
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, True),
-                reason=f"util {util:.1f}% > {self.config.emergency_reduce_pct}% (exp active)"
+                reason=f"util {util:.1f}% > {self.config.emergency_reduce_pct}% (exp active)",
             )
 
         if util > self.config.reduce_pct:
@@ -161,7 +161,7 @@ class ScalingEngine:
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, True),
-                reason=f"util {util:.1f}% > {self.config.reduce_pct}% (exp active)"
+                reason=f"util {util:.1f}% > {self.config.reduce_pct}% (exp active)",
             )
 
         if util < self.config.target_floor_pct:
@@ -169,13 +169,13 @@ class ScalingEngine:
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, True),
-                reason=f"util {util:.1f}% < {self.config.target_floor_pct}% (exp active, boost)"
+                reason=f"util {util:.1f}% < {self.config.target_floor_pct}% (exp active, boost)",
             )
 
         return ScalingDecision(
             target_step=current_step,
             filler_mps_cap_pct=self._interpolate_mps_cap(current_step, True),
-            reason=f"util {util:.1f}% with exp active - holding"
+            reason=f"util {util:.1f}% with exp active - holding",
         )
 
     def should_transition(
@@ -184,7 +184,7 @@ class ScalingEngine:
         current_state: FillerState,
         state_machine: FillerStateMachine,
         consecutive_count: int,
-        hysteresis_polls: int
+        hysteresis_polls: int,
     ) -> bool:
         target_major_level = decision.target_step // self.config.sublevels_per_major
         if target_major_level == int(current_state):
