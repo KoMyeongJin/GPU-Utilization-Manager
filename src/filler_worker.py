@@ -6,6 +6,8 @@ import signal
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+from src.config import matrix_size_for_step
+
 
 class FillerWorker:
     def __init__(self):
@@ -81,27 +83,7 @@ class FillerWorker:
             return 2 * self.sublevels_per_major
 
     def _matrix_size_for_step(self, step: int) -> int:
-        size_map = {
-            0: 0,
-            1: 1024,
-            2: 2048,
-            3: 4096,
-            4: 8192,
-            5: 10240,
-            6: 12288,
-            7: 14336,
-            8: 16384,
-        }
-        major_level = min(step // self.sublevels_per_major, 8)
-        sublevel = step % self.sublevels_per_major
-        if self.sublevels_per_major == 1 or major_level >= 8:
-            return size_map[major_level]
-        next_level = min(major_level + 1, 8)
-        ratio = sublevel / self.sublevels_per_major
-        interpolated = size_map[major_level] + ratio * (
-            size_map[next_level] - size_map[major_level]
-        )
-        return int(interpolated)
+        return matrix_size_for_step(step, self.sublevels_per_major)
 
     def _compute_gemm(self, size: int) -> torch.Tensor:
         a = torch.randn(size, size, device=self.device, dtype=torch.float16)

@@ -4,7 +4,15 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from src.config import matrix_size_for_step
 from src.filler_worker import FillerWorker
+
+
+def _old_linear_size(
+    start: int, end: int, sublevel: int, sublevels_per_major: int
+) -> int:
+    ratio = sublevel / sublevels_per_major
+    return int(start + ratio * (end - start))
 
 
 class TestFillerWorkerComputeSemantics:
@@ -103,3 +111,64 @@ class TestFillerWorkerComputeSemantics:
 
         worker._launch_gemm.assert_called()
         worker._synchronize_device.assert_called_once_with()
+
+    def test_major_step_anchors_are_preserved_with_sublevels(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "FILLER_SUBLEVELS_PER_MAJOR": "4",
+            },
+        ):
+            worker = FillerWorker()
+
+        expected = {
+            0: 0,
+            1: 1024,
+            5: 2048,
+            9: 4096,
+            13: 6144,
+            17: 8192,
+            21: 10240,
+            25: 13312,
+            29: 16384,
+        }
+
+        actual = {step: worker._matrix_size_for_step(step) for step in expected}
+
+        assert actual == expected
+
+    def test_intermediate_steps_follow_linear_size_progression(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "FILLER_SUBLEVELS_PER_MAJOR": "4",
+            },
+        ):
+            worker = FillerWorker()
+
+        steps = [5, 6, 7, 8, 9]
+        new_sizes = [worker._matrix_size_for_step(step) for step in steps]
+        expected_sizes = [
+            _old_linear_size(2048, 4096, sublevel, 4) for sublevel in range(5)
+        ]
+
+        assert new_sizes[0] == 2048
+        assert new_sizes[-1] == 4096
+        assert new_sizes == sorted(new_sizes)
+        assert new_sizes == expected_sizes
+
+    def test_runtime_matrix_size_matches_shared_step_size_helper(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "FILLER_SUBLEVELS_PER_MAJOR": "4",
+            },
+        ):
+            worker = FillerWorker()
+
+        actual = [worker._matrix_size_for_step(step) for step in range(33)]
+        expected = [
+            matrix_size_for_step(step, worker.sublevels_per_major) for step in range(33)
+        ]
+
+        assert actual == expected
