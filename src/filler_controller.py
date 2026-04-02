@@ -2,6 +2,7 @@ import subprocess
 import os
 import signal
 from typing import List, Dict, Optional
+
 try:
     from .config import ManagerConfig, FillerLevel
     from .shared_memory import SharedMemoryManager
@@ -17,6 +18,7 @@ class FillerController:
         self._workers: Dict[int, subprocess.Popen[bytes]] = {}
         self._current_step = 0
         self._current_major_level = 0
+        self._current_level_config: Optional[FillerLevel] = None
 
     def initialize(self) -> bool:
         try:
@@ -44,15 +46,19 @@ class FillerController:
 
     def _start_worker(self, worker_id: int, level_config: FillerLevel) -> Optional[int]:
         env = os.environ.copy()
-        env.update({
-            "GPU_MANAGER_SHM": self.config.shm_name,
-            "FILLER_WORKER_ID": str(worker_id),
-            "FILLER_BATCH_SIZE": str(level_config.batch_size),
-            "FILLER_STREAMS": str(level_config.streams),
-            "FILLER_SLEEP_MS": str(level_config.sleep_ms),
-            "FILLER_SUBLEVELS_PER_MAJOR": str(self.config.filler.sublevels_per_major),
-            "CUDA_VISIBLE_DEVICES": str(self.config.gpu_id),
-        })
+        env.update(
+            {
+                "GPU_MANAGER_SHM": self.config.shm_name,
+                "FILLER_WORKER_ID": str(worker_id),
+                "FILLER_BATCH_SIZE": str(level_config.batch_size),
+                "FILLER_STREAMS": str(level_config.streams),
+                "FILLER_SLEEP_MS": str(level_config.sleep_ms),
+                "FILLER_SUBLEVELS_PER_MAJOR": str(
+                    self.config.filler.sublevels_per_major
+                ),
+                "CUDA_VISIBLE_DEVICES": str(self.config.gpu_id),
+            }
+        )
 
         script_path = os.path.join(os.path.dirname(__file__), "filler_worker.py")
 
@@ -62,7 +68,7 @@ class FillerController:
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True
+                start_new_session=True,
             )
             self._workers[proc.pid] = proc
             return proc.pid
@@ -100,6 +106,9 @@ class FillerController:
         level_config = self.config.filler.interpolate_level_config(clamped_step)
         self.shm.set_step(clamped_step)
 
+        if self._current_level_config != level_config and self._workers:
+            self.stop_all()
+
         self.ensure_workers(level_config.workers, level_config)
         if clamped_step == 0:
             self.shm.pause()
@@ -107,6 +116,7 @@ class FillerController:
             self.shm.resume()
         self._current_step = clamped_step
         self._current_major_level = major_level
+        self._current_level_config = level_config
 
         return True
 
