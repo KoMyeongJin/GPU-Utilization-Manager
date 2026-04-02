@@ -29,8 +29,8 @@ class TestScalingEngine:
         decision = engine.decide(
             [Sample(0), Sample(0), Sample(0)], Status(False), 4, 0.0
         )
-        assert decision.target_step == 5
-        assert decision.filler_mps_cap_pct == 45
+        assert decision.target_step == 8
+        assert decision.filler_mps_cap_pct == 60
 
     def test_holding_range_keeps_current_step(self):
         engine = ScalingEngine(
@@ -58,8 +58,59 @@ class TestScalingEngine:
         decision = engine.decide(
             [Sample(0), Sample(0), Sample(0)], Status(True), 4, 0.0
         )
-        assert decision.target_step == 5
-        assert decision.filler_mps_cap_pct == 6
+        assert decision.target_step == 8
+        assert decision.filler_mps_cap_pct == 10
+
+    def test_small_gap_still_moves_one_sublevel(self):
+        engine = ScalingEngine(
+            ScalingConfig(
+                target_util_pct=70.0,
+                sublevels_per_major=4,
+                max_major_level=8,
+                mps_caps_no_experiment=[0, 40, 60, 80, 90, 92, 94, 96, 98],
+                mps_caps_experiment_active=[0, 5, 10, 20, 30, 35, 40, 45, 50],
+            )
+        )
+        decision = engine.decide(
+            [Sample(62), Sample(63), Sample(64)], Status(False), 8, 0.0
+        )
+        assert decision.target_step == 9
+
+    def test_large_high_gap_downshifts_one_level(self):
+        engine = ScalingEngine(
+            ScalingConfig(
+                target_util_pct=70.0,
+                reduce_pct=92.0,
+                emergency_reduce_pct=95.0,
+                critical_pause_pct=98.0,
+                sublevels_per_major=4,
+                max_major_level=8,
+                mps_caps_no_experiment=[0, 40, 60, 80, 90, 92, 94, 96, 98],
+                mps_caps_experiment_active=[0, 5, 10, 20, 30, 35, 40, 45, 50],
+            )
+        )
+        decision = engine.decide(
+            [Sample(91), Sample(92), Sample(93)], Status(False), 12, 0.0
+        )
+        assert decision.target_step == 8
+
+    def test_experiment_large_high_gap_downshifts_one_level(self):
+        engine = ScalingEngine(
+            ScalingConfig(
+                target_util_pct=70.0,
+                reduce_pct=92.0,
+                emergency_reduce_pct=95.0,
+                critical_pause_pct=98.0,
+                sublevels_per_major=4,
+                max_major_level=8,
+                mps_caps_no_experiment=[0, 40, 60, 80, 90, 92, 94, 96, 98],
+                mps_caps_experiment_active=[0, 5, 10, 20, 30, 35, 40, 45, 50],
+            )
+        )
+        decision = engine.decide(
+            [Sample(91), Sample(92), Sample(93)], Status(True), 12, 0.0
+        )
+        assert decision.target_step == 8
 
     def test_critical_util_resets_to_zero_without_experiment(self):
         engine = ScalingEngine(

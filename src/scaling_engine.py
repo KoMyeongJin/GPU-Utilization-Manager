@@ -35,6 +35,22 @@ class ScalingEngine:
     def max_step(self) -> int:
         return self.config.max_major_level * self.config.sublevels_per_major
 
+    @property
+    def level_step(self) -> int:
+        return max(1, self.config.sublevels_per_major)
+
+    def _upshift_step(self, current_step: int, util: float) -> int:
+        step_delta = (
+            self.level_step if util <= (self.config.target_util_pct - 10.0) else 1
+        )
+        return min(current_step + step_delta, self.max_step)
+
+    def _downshift_step(self, current_step: int, util: float) -> int:
+        step_delta = (
+            self.level_step if util >= (self.config.target_util_pct + 10.0) else 1
+        )
+        return max(current_step - step_delta, 0)
+
     def decide(
         self,
         samples: List[GpuMetrics],
@@ -85,7 +101,7 @@ class ScalingEngine:
         self, util: float, trend: float, current_step: int
     ) -> ScalingDecision:
         if util < self.config.low_boost_pct:
-            new_step = min(current_step + 1, self.max_step)
+            new_step = self._upshift_step(current_step, util)
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, False),
@@ -93,7 +109,7 @@ class ScalingEngine:
             )
 
         if util < self.config.target_floor_pct:
-            new_step = min(current_step + 1, self.max_step)
+            new_step = self._upshift_step(current_step, util)
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, False),
@@ -116,7 +132,7 @@ class ScalingEngine:
             )
 
         if util > self.config.emergency_reduce_pct:
-            new_step = max(current_step - 1, 0)
+            new_step = self._downshift_step(current_step, util)
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, False),
@@ -124,7 +140,7 @@ class ScalingEngine:
             )
 
         if util > self.config.reduce_pct:
-            new_step = max(current_step - 1, 0)
+            new_step = self._downshift_step(current_step, util)
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, False),
@@ -141,7 +157,7 @@ class ScalingEngine:
         self, util: float, trend: float, current_step: int, experiment: ExperimentStatus
     ) -> ScalingDecision:
         if trend > 10:
-            new_step = max(current_step - 1, 0)
+            new_step = self._downshift_step(current_step, util)
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, True),
@@ -157,7 +173,7 @@ class ScalingEngine:
             )
 
         if util > self.config.reduce_pct:
-            new_step = max(current_step - 1, 0)
+            new_step = self._downshift_step(current_step, util)
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, True),
@@ -165,7 +181,7 @@ class ScalingEngine:
             )
 
         if util < self.config.target_floor_pct:
-            new_step = min(current_step + 1, self.max_step)
+            new_step = self._upshift_step(current_step, util)
             return ScalingDecision(
                 target_step=new_step,
                 filler_mps_cap_pct=self._interpolate_mps_cap(new_step, True),
