@@ -11,19 +11,21 @@ Maintains target GPU utilization on a single selected GPU by running low-priorit
 
 ## Behavior
 
+- If the first startup sample for the selected GPU is exactly `0.0%`, the daemon starts from `step 32` as an initial boost state
 - If the selected GPU is under the target, filler level increases gradually
 - If the selected GPU is in the healthy range, the current level is held
 - If the selected GPU is too busy, filler level is reduced gradually
-- When level is `0`, workers are paused
+- If utilization reaches `98%+`, filler is reset to `level 0`
+- When level is `0`, workers are paused and only `step 0` is used
 - When level is `1..8`, workers are resumed and compute on the selected GPU
 
-The controller uses smoothed utilization rather than a single instantaneous sample, and it moves one level at a time to reduce oscillation.
+The controller uses smoothed utilization rather than a single instantaneous sample. If utilization is at least 10 percentage points away from the `70%` target, it can move by a full level; otherwise it moves one substep at a time.
 
 ## Architecture
 
 ```text
 GPU Manager Daemon
-  ├─ DCGM / nvidia-smi monitor
+  ├─ NVML / DCGM / nvidia-smi monitor
   ├─ metrics aggregator
   ├─ scaling engine
   ├─ state machine
@@ -48,7 +50,8 @@ What setup does now:
 - chooses the PyTorch wheel index from the detected CUDA version
 - installs `pyyaml` and `nvidia-ml-py`
 - tries to install DCGM packages
-- prepares MPS directories
+- prepares only the regular log directories
+- configures MPS only when you run `./scripts/setup.sh mps [gpu_id]`
 
 ### 2. Start
 
@@ -96,7 +99,7 @@ Main settings live in `config.yaml`.
 gpu_id: 0
 poll_interval_sec: 2.0
 target_util_pct: 70.0
-enable_mps: true
+enable_mps: false
 
 thresholds:
   low_boost_pct: 65.0
@@ -112,18 +115,22 @@ thresholds:
 The current default filler levels are:
 
 ```yaml
-0: workers=0  batch_size=0   streams=0  sleep_ms=100
-1: workers=1  batch_size=32  streams=1  sleep_ms=20
-2: workers=1  batch_size=64  streams=2  sleep_ms=10
-3: workers=2  batch_size=96  streams=2  sleep_ms=5
-4: workers=2  batch_size=128 streams=4  sleep_ms=0
-5: workers=3  batch_size=160 streams=4  sleep_ms=0
-6: workers=3  batch_size=192 streams=5  sleep_ms=0
-7: workers=4  batch_size=224 streams=6  sleep_ms=0
-8: workers=4  batch_size=256 streams=8  sleep_ms=0
+sublevels_per_major: 8
+
+0: workers=0  batch_size=0  streams=0  sleep_ms=100
+1: workers=1  batch_size=6  streams=1  sleep_ms=40
+2: workers=1  batch_size=10 streams=1  sleep_ms=32
+3: workers=1  batch_size=16 streams=1  sleep_ms=24
+4: workers=1  batch_size=20 streams=1  sleep_ms=16
+5: workers=1  batch_size=20 streams=2  sleep_ms=18
+6: workers=1  batch_size=24 streams=2  sleep_ms=15
+7: workers=1  batch_size=26 streams=2  sleep_ms=12
+8: workers=1  batch_size=32 streams=2  sleep_ms=8
 ```
 
 Important: these are relative intensity levels, not guaranteed utilization percentages. On a larger GPU, even level 8 may still be below 70%.
+
+`level 0` is not subdivided. The paused state is `step 0` only, and the active ladder starts at `step 1`.
 
 ## MPS Caps
 
@@ -135,6 +142,8 @@ mps_caps_experiment_active:  [0, 5, 10, 20, 30, 35, 40, 45, 50]
 ```
 
 ## Monitoring
+
+The daemon now prefers in-process NVML reads and falls back to DCGM or `nvidia-smi` only when needed.
 
 ```bash
 ./scripts/run.sh status
@@ -157,6 +166,8 @@ enable_mps: false
 - single-GPU only per manager instance
 - level definitions are static defaults
 - level 8 is not guaranteed to hit 70% on every GPU
+- transition logs show decision-time smoothed util, not post-transition util
+- the first control loop can still log an `N/A` parsing warning on some systems
 - terminal output from the daemon can still appear in the launching shell unless redirected
 
 ## Project Layout
