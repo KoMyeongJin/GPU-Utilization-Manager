@@ -19,7 +19,7 @@ hysteresis:
   min_dwell_sec: 8.0
 
 filler:
-  sublevels_per_major: 4
+  sublevels_per_major: 8
   levels:
     0: # PAUSED
       workers: 0
@@ -28,44 +28,44 @@ filler:
       sleep_ms: 100
     1: # LOW
       workers: 1
-      batch_size: 32
+      batch_size: 6
       streams: 1
-      sleep_ms: 20
+      sleep_ms: 40
     2: # MEDIUM
       workers: 1
-      batch_size: 64
-      streams: 2
-      sleep_ms: 10
+      batch_size: 10
+      streams: 1
+      sleep_ms: 32
     3: # HIGH
-      workers: 2
-      batch_size: 96
-      streams: 2
-      sleep_ms: 5
+      workers: 1
+      batch_size: 16
+      streams: 1
+      sleep_ms: 24
     4: # MAX
-      workers: 2
-      batch_size: 128
-      streams: 4
-      sleep_ms: 0
+      workers: 1
+      batch_size: 20
+      streams: 1
+      sleep_ms: 16
     5:
-      workers: 3
-      batch_size: 160
-      streams: 4
-      sleep_ms: 0
+      workers: 1
+      batch_size: 20
+      streams: 2
+      sleep_ms: 18
     6:
-      workers: 3
-      batch_size: 192
-      streams: 5
-      sleep_ms: 0
+      workers: 1
+      batch_size: 24
+      streams: 2
+      sleep_ms: 15
     7:
-      workers: 4
-      batch_size: 224
-      streams: 6
-      sleep_ms: 0
+      workers: 1
+      batch_size: 26
+      streams: 2
+      sleep_ms: 12
     8:
-      workers: 4
-      batch_size: 256
-      streams: 8
-      sleep_ms: 0
+      workers: 1
+      batch_size: 32
+      streams: 2
+      sleep_ms: 8
 
   mps_caps_no_experiment: [0, 40, 60, 80, 90, 92, 94, 96, 98]
   mps_caps_experiment_active: [0, 5, 10, 20, 30, 35, 40, 45, 50]
