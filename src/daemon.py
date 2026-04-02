@@ -27,6 +27,7 @@ except ImportError:
 
 
 class GPUtilizationManager:
+    STARTUP_BOOST_STEP = 32
 
     def _inactive_experiment_status(self) -> ExperimentStatus:
         return ExperimentStatus(
@@ -36,7 +37,9 @@ class GPUtilizationManager:
             experiments=[],
         )
 
-    def _get_effective_experiment_status(self, current_gpu_util_pct: Optional[float] = None) -> ExperimentStatus:
+    def _get_effective_experiment_status(
+        self, current_gpu_util_pct: Optional[float] = None
+    ) -> ExperimentStatus:
         if not self.config.enable_mps:
             return self._inactive_experiment_status()
 
@@ -54,13 +57,12 @@ class GPUtilizationManager:
         self.aggregator = MetricsAggregator(window_size=10)
         self.registry = ExperimentRegistry(
             heartbeat_timeout_sec=self.config.experiment_heartbeat_timeout_sec,
-            enable_process_detection=self.config.enable_process_detection
+            enable_process_detection=self.config.enable_process_detection,
         )
         self.registry.set_gpu_id(self.config.gpu_id)
 
         self.mps = MPSAdapter(
-            pipe_dir=self.config.mps_pipe_dir,
-            log_dir=self.config.mps_log_dir
+            pipe_dir=self.config.mps_pipe_dir, log_dir=self.config.mps_log_dir
         )
 
         self.filler = FillerController(self.config)
@@ -91,9 +93,11 @@ class GPUtilizationManager:
         self._poll_count = 0
         self._consecutive_matches = 0
         self._last_decision = None
-        
+
         # NEW: Diagnostic fields
-        self._diagnostic_interval = getattr(self.config, 'diagnostic_interval_polls', 30)
+        self._diagnostic_interval = getattr(
+            self.config, "diagnostic_interval_polls", 30
+        )
         self._diagnostic_counter = 0
         self._decision_timestamps = []
 
@@ -150,7 +154,9 @@ class GPUtilizationManager:
         status = self._get_effective_experiment_status()
         if status.active:
             self.state_machine.downshift(2, "experiment started")
-            mps_cap = self.config.filler.interpolate_mps_cap(self.state_machine.current_step, True)
+            mps_cap = self.config.filler.interpolate_mps_cap(
+                self.state_machine.current_step, True
+            )
             if self.config.enable_mps:
                 self.mps.set_active_thread_percentage(mps_cap)
             self.filler.apply_step(self.state_machine.current_step)
@@ -163,13 +169,17 @@ class GPUtilizationManager:
     def _log_diagnostics(self, metrics, decision):
         """Log diagnostic information for failure mode investigation."""
         try:
-            kv_pressure = self.aggregator.get_kv_cache_pressure_estimate(metrics.memory_util)
+            kv_pressure = self.aggregator.get_kv_cache_pressure_estimate(
+                metrics.memory_util
+            )
             measurement_noise = self.aggregator.detect_measurement_noise()
-            
+
             worker_count = len(self.filler.get_active_pids())
-            target_major_level = decision.target_step // self.config.filler.sublevels_per_major + 1
+            target_major_level = (
+                decision.target_step // self.config.filler.sublevels_per_major + 1
+            )
             parallelism_ratio = worker_count / max(target_major_level, 1)
-            
+
             diagnostic_msg = (
                 f"[DIAG] GPU%={metrics.gpu_util:.1f} "
                 f"Mem%={metrics.memory_util:.1f} ({kv_pressure}) "
@@ -180,7 +190,7 @@ class GPUtilizationManager:
                 f"MeasurementNoise={measurement_noise}"
             )
             print(diagnostic_msg)
-            
+
             # Log to file for analysis
             try:
                 with open(f"/tmp/gpu_diag_{self.config.gpu_id}.log", "a") as f:
@@ -195,20 +205,20 @@ class GPUtilizationManager:
         """Measure time between consecutive scaling decisions."""
         now = time.time()
         self._decision_timestamps.append(now)
-        
+
         # Keep last 100 decisions
         if len(self._decision_timestamps) > 100:
             self._decision_timestamps.pop(0)
-        
+
         if len(self._decision_timestamps) < 2:
             return 0.0
-        
+
         # Average time between decisions
         deltas = [
-            self._decision_timestamps[i+1] - self._decision_timestamps[i]
+            self._decision_timestamps[i + 1] - self._decision_timestamps[i]
             for i in range(len(self._decision_timestamps) - 1)
         ]
-        
+
         return sum(deltas) / len(deltas) if deltas else 0.0
 
     def initialize(self) -> bool:
@@ -224,7 +234,12 @@ class GPUtilizationManager:
         self._start_socket_server()
         self._setup_signal_handlers()
 
-        self.filler.apply_level(0)
+        initial_sample = self.monitor.read_sample()
+        initial_step = self.STARTUP_BOOST_STEP if initial_sample.gpu_util == 0.0 else 0
+        self.state_machine.transition_to_step(
+            initial_step, "startup initial util check"
+        )
+        self.filler.apply_step(initial_step)
         print(f"Initialized on GPU {self.config.gpu_id}")
 
         return True
@@ -238,10 +253,7 @@ class GPUtilizationManager:
         exp_status = self._get_effective_experiment_status(current_gpu_util_pct=util)
 
         decision = self.scaling.decide(
-            self.aggregator.samples,
-            exp_status,
-            self.state_machine.current_step,
-            trend
+            self.aggregator.samples, exp_status, self.state_machine.current_step, trend
         )
 
         if decision.target_step == self.state_machine.current_step:
@@ -249,30 +261,38 @@ class GPUtilizationManager:
         else:
             self._consecutive_matches += 1
 
-        hysteresis_met = self._consecutive_matches >= self.config.hysteresis.consecutive_polls
+        hysteresis_met = (
+            self._consecutive_matches >= self.config.hysteresis.consecutive_polls
+        )
 
         if hysteresis_met:
             previous_step = self.state_machine.current_step
             new_step = self.state_machine.process_decision(decision, hysteresis_met)
 
             if new_step != previous_step:
-                mps_cap = self.config.filler.interpolate_mps_cap(new_step, exp_status.active)
+                mps_cap = self.config.filler.interpolate_mps_cap(
+                    new_step, exp_status.active
+                )
                 if self.config.enable_mps:
                     self.mps.set_active_thread_percentage(mps_cap)
                 self.filler.apply_step(new_step)
 
-                print(f"Transitioned to step {new_step} (level {self.state_machine.current_level}+{self.state_machine.current_sublevel}/{self.config.filler.sublevels_per_major}): {decision.reason} "
-                      f"(util={util:.1f}%, exp_active={exp_status.active})")
+                print(
+                    f"Transitioned to step {new_step} (level {self.state_machine.current_level}+{self.state_machine.current_sublevel}/{self.config.filler.sublevels_per_major}): {decision.reason} "
+                    f"(util={util:.1f}%, exp_active={exp_status.active})"
+                )
 
         self._last_decision = decision
-        
+
         # NEW: Diagnostic logging
         self._diagnostic_counter += 1
         if self._diagnostic_counter >= self._diagnostic_interval:
             self._log_diagnostics(sample, decision)
             scheduler_latency = self._measure_scheduler_latency()
             if scheduler_latency > self.config.poll_interval_sec * 2:
-                print(f"[WARN] Scheduler latency high: {scheduler_latency:.3f}s (potential queue starvation)")
+                print(
+                    f"[WARN] Scheduler latency high: {scheduler_latency:.3f}s (potential queue starvation)"
+                )
             self._diagnostic_counter = 0
 
     def run(self):
