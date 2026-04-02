@@ -2,12 +2,14 @@
 
 import os
 import sys
+import types
 import pytest
 import time
 from unittest.mock import Mock, MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import src.dcgm_monitor as dcgm_monitor
 from src.dcgm_monitor import GpuMetrics, MetricsAggregator, NsightProfiler, DCGMMonitor
 
 
@@ -141,9 +143,68 @@ class TestNsightProfiler:
 
 
 class TestDCGMMonitorNormalization:
+    def test_nvml_metrics_are_used_when_available(self, monkeypatch):
+        fake_pynvml = types.SimpleNamespace(
+            NVML_TEMPERATURE_GPU=0,
+            nvmlInit=Mock(),
+            nvmlDeviceGetHandleByIndex=Mock(return_value="handle"),
+            nvmlDeviceGetUtilizationRates=Mock(
+                return_value=types.SimpleNamespace(gpu=55, memory=22)
+            ),
+            nvmlDeviceGetMemoryInfo=Mock(
+                return_value=types.SimpleNamespace(
+                    used=8 * 1024 * 1024,
+                    total=16 * 1024 * 1024,
+                )
+            ),
+            nvmlDeviceGetTemperature=Mock(return_value=66),
+            nvmlDeviceGetPowerUsage=Mock(return_value=250000),
+        )
+
+        monkeypatch.setattr(DCGMMonitor, "_check_dcgm", lambda self: False)
+        monkeypatch.setattr(
+            dcgm_monitor.importlib, "import_module", lambda name: fake_pynvml
+        )
+
+        monitor = DCGMMonitor(gpu_id=0)
+
+        with patch.object(dcgm_monitor.subprocess, "run") as mock_run:
+            metrics = monitor.read_sample()
+
+        assert metrics is not None
+        assert monitor.use_nvml is True
+        assert metrics.gpu_util == 55.0
+        assert metrics.memory_util == 50.0
+        assert metrics.temperature == 66.0
+        assert metrics.power_draw == 250.0
+        mock_run.assert_not_called()
+
+    def test_nvml_unavailable_falls_back_to_existing_path(self, monkeypatch):
+        monkeypatch.setattr(DCGMMonitor, "_check_dcgm", lambda self: False)
+        monkeypatch.setattr(
+            dcgm_monitor.importlib, "import_module", Mock(side_effect=ImportError)
+        )
+        monitor = DCGMMonitor(gpu_id=0)
+
+        mock_result = Mock(
+            returncode=0,
+            stdout="2026/04/01 00:00:00.000, 12, 34, 10000, 18000, 65, 250\n",
+        )
+
+        with patch.object(dcgm_monitor.subprocess, "run", return_value=mock_result):
+            metrics = monitor.read_sample()
+
+        assert metrics is not None
+        assert monitor.use_nvml is False
+        assert metrics.gpu_util == 12.0
+        assert metrics.memory_util == 34.0
+
     def test_nvidia_smi_fractional_utilization_is_normalized_to_percent(self):
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(DCGMMonitor, "_check_dcgm", lambda self: False)
+            mp.setattr(
+                dcgm_monitor.importlib, "import_module", Mock(side_effect=ImportError)
+            )
             monitor = DCGMMonitor(gpu_id=0)
 
         mock_result = Mock(
@@ -161,6 +222,9 @@ class TestDCGMMonitorNormalization:
     def test_dcgmi_fractional_utilization_is_normalized_to_percent(self):
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(DCGMMonitor, "_check_dcgm", lambda self: True)
+            mp.setattr(
+                dcgm_monitor.importlib, "import_module", Mock(side_effect=ImportError)
+            )
             monitor = DCGMMonitor(gpu_id=0)
 
         mock_result = Mock(returncode=0, stdout="# header\n0 0 0.1 0.4 1234 5678\n")
@@ -175,6 +239,9 @@ class TestDCGMMonitorNormalization:
     def test_percent_utilization_is_left_unchanged(self):
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(DCGMMonitor, "_check_dcgm", lambda self: False)
+            mp.setattr(
+                dcgm_monitor.importlib, "import_module", Mock(side_effect=ImportError)
+            )
             monitor = DCGMMonitor(gpu_id=0)
 
         assert monitor._normalize_percent_metric("90") == 90.0

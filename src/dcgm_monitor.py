@@ -1,5 +1,6 @@
 """DCGM-based GPU monitoring with diagnostic enhancements."""
 
+import importlib
 import subprocess
 import json
 import time
@@ -94,8 +95,27 @@ class DCGMMonitor:
 
     def __init__(self, gpu_id: int = 0):
         self.gpu_id = gpu_id
+        self._pynvml = None
+        self._nvml_handle = None
+        self.use_nvml = self._init_nvml()
         self.use_dcgm = self._check_dcgm()
         self._last_metrics: Optional[GpuMetrics] = None
+
+    def _init_nvml(self) -> bool:
+        try:
+            pynvml = importlib.import_module("pynvml")
+        except ImportError:
+            return False
+
+        try:
+            pynvml.nvmlInit()
+            self._pynvml = pynvml
+            self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(self.gpu_id)
+            return True
+        except Exception:
+            self._pynvml = None
+            self._nvml_handle = None
+            return False
 
     def _check_dcgm(self) -> bool:
         try:
@@ -146,6 +166,53 @@ class DCGMMonitor:
         except (subprocess.TimeoutExpired, ValueError, IndexError):
             return None
 
+    def _get_nvml_metrics(self) -> Optional[GpuMetrics]:
+        if not self.use_nvml or self._pynvml is None or self._nvml_handle is None:
+            return None
+
+        try:
+            utilization = self._pynvml.nvmlDeviceGetUtilizationRates(self._nvml_handle)
+            memory = self._pynvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
+
+            temperature = None
+            try:
+                temperature = float(
+                    self._pynvml.nvmlDeviceGetTemperature(
+                        self._nvml_handle, self._pynvml.NVML_TEMPERATURE_GPU
+                    )
+                )
+            except Exception:
+                pass
+
+            power_draw = None
+            try:
+                power_draw = (
+                    float(self._pynvml.nvmlDeviceGetPowerUsage(self._nvml_handle))
+                    / 1000.0
+                )
+            except Exception:
+                pass
+
+            memory_total_mb = float(memory.total) / (1024 * 1024)
+            memory_used_mb = float(memory.used) / (1024 * 1024)
+            memory_util = 0.0
+            if memory.total > 0:
+                memory_util = (float(memory.used) / float(memory.total)) * 100.0
+
+            return GpuMetrics(
+                timestamp=time.time(),
+                gpu_id=self.gpu_id,
+                gpu_util=float(utilization.gpu),
+                memory_util=memory_util,
+                memory_used_mb=memory_used_mb,
+                memory_total_mb=memory_total_mb,
+                temperature=temperature,
+                power_draw=power_draw,
+                sm_active=None,
+            )
+        except Exception:
+            return None
+
     def _get_dcgm_metrics(self) -> Optional[GpuMetrics]:
         try:
             result = subprocess.run(
@@ -185,7 +252,13 @@ class DCGMMonitor:
 
     def read_sample(self) -> GpuMetrics:
         """Read GPU metrics sample."""
-        if self.use_dcgm:
+        if self.use_nvml:
+            metrics = self._get_nvml_metrics()
+            if metrics is None and self.use_dcgm:
+                metrics = self._get_dcgm_metrics()
+            elif metrics is None:
+                metrics = self._get_nvidia_smi_metrics()
+        elif self.use_dcgm:
             metrics = self._get_dcgm_metrics()
         else:
             metrics = self._get_nvidia_smi_metrics()
